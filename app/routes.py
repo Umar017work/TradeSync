@@ -1,11 +1,25 @@
 import logging
+import hmac
+import hashlib
 from datetime import datetime
-from flask import Blueprint, request, jsonify, render_template_string
+from flask import Blueprint, request, jsonify, render_template_string, current_app
 from .database import db
 from .models import WebhookEvent, Account
 
 webhook_bp = Blueprint('webhook', __name__)
 logger = logging.getLogger(__name__)
+
+def verify_signature(payload_bytes, signature_header):
+    """
+    Verifies that the incoming payload matches the HMAC SHA256 signature.
+    """
+    if not signature_header:
+        return False
+        
+    secret = current_app.config.get('WEBHOOK_SECRET').encode()
+    expected_signature = hmac.new(secret, payload_bytes, hashlib.sha256).hexdigest()
+    
+    return hmac.compare_digest(expected_signature, signature_header)
 
 @webhook_bp.route('/', methods=['GET'])
 def index():
@@ -230,40 +244,34 @@ def index():
                 btn.disabled = true;
                 btn.textContent = 'Processing...';
 
-                const isDuplicate = Math.random() < 0.2; // 20% chance to send a duplicate
-                const demoId = isDuplicate ? 'demo_duplicate' : 'demo_' + Math.floor(Math.random() * 1000000);
-                
-                const payload = {
-                    "event_id": demoId,
-                    "event_type": "account_created",
-                    "timestamp": new Date().toISOString(),
-                    "account": {
-                        "account_id": "ACC-" + (isDuplicate ? "DUP" : demoId.split('_')[1]),
-                        "user_id": "USR-DEMO",
-                        "user_name": "Demo Trader (Generated)",
-                        "broker": "TradeSync Simulator",
-                        "platform": "Demo-Mode",
-                        "account_type": "Portfolio Demo",
-                        "balance": 100000,
-                        "status": "Active"
-                    }
-                };
-
                 try {
+                    // 1. Get a signed demo payload from our internal generator
+                    const demoResponse = await fetch('/api/demo-event', { method: 'POST' });
+                    const { payload, signature } = await demoResponse.json();
+
+                    // 2. Send the signed payload to the real webhook endpoint
                     const response = await fetch('/webhook', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: { 
+                            'Content-Type': 'application/json',
+                            'X-Signature': signature
+                        },
                         body: JSON.stringify(payload)
                     });
+
                     if (response.ok) {
-                        status.textContent = 'Success! Webhook processed.';
+                        status.textContent = 'Success! Signed webhook processed.';
                         status.style.color = 'var(--success)';
                         setTimeout(() => window.location.reload(), 1000);
+                    } else {
+                        const errData = await response.json();
+                        throw new Error(errData.message || 'Server error');
                     }
                 } catch (err) {
-                    status.textContent = 'Error sending webhook.';
+                    status.textContent = 'Security Error: ' + err.message;
                     status.style.color = 'var(--error)';
                     btn.disabled = false;
+                    btn.textContent = 'Generate Sample Event';
                 }
             }
         </script>
@@ -312,7 +320,12 @@ def documentation():
             
             <div>
                 <h3><span class="method post">POST</span> /webhook</h3>
-                <p>Receives platform events with idempotency tracking.</p>
+                <p>Receives platform events with idempotency tracking. Requires HMAC signature.</p>
+                <p><strong>Required Headers:</strong></p>
+                <ul>
+                    <li><code>Content-Type: application/json</code></li>
+                    <li><code>X-Signature: [hmac-sha256-hash]</code></li>
+                </ul>
                 <p><strong>Example Request:</strong></p>
                 <pre>{
     "event_id": "evt_unique_123",
@@ -377,13 +390,56 @@ def get_audit():
         "payload": e.payload
     } for e in events]), 200
 
+@webhook_bp.route('/api/demo-event', methods=['POST'])
+def generate_demo_event():
+    """
+    Internal endpoint to simulate a signed webhook for demonstration purposes.
+    """
+    import json
+    import hashlib
+    import hmac
+    from datetime import datetime
+    
+    demo_id = 'demo_' + str(datetime.now().timestamp()).replace('.', '')
+    payload = {
+        "event_id": demo_id,
+        "event_type": "account_created",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "account": {
+            "account_id": "ACC-" + demo_id.split('_')[1][-6:],
+            "user_id": "USR-DEMO",
+            "user_name": "Demo Trader (Signed)",
+            "broker": "Secure Broker",
+            "balance": 100000,
+            "status": "Active"
+        }
+    }
+    
+    # Sign the payload correctly for internal relay
+    payload_bytes = json.dumps(payload).encode()
+    secret = current_app.config.get('WEBHOOK_SECRET').encode()
+    signature = hmac.new(secret, payload_bytes, hashlib.sha256).hexdigest()
+    
+    return jsonify({
+        "payload": payload,
+        "signature": signature
+    }), 200
+
 @webhook_bp.route('/webhook', methods=['POST'])
 def handle_webhook():
     """
     Main endpoint for receiving webhooks.
-    Handles idempotency and delegates event processing.
+    Handles security (HMAC), idempotency, and delegates event processing.
     """
-    # 1. Basic validation
+    # 1. Security Check: HMAC Signature Verification
+    signature = request.headers.get('X-Signature')
+    if not verify_signature(request.get_data(), signature):
+        logger.warning(f"Invalid signature received from {request.remote_addr}")
+        return jsonify({"error": "Unauthorized", "message": "Invalid X-Signature"}), 401
+    
+    logger.info("Signature verified successfully")
+
+    # 2. Basic validation
     if not request.is_json:
         logger.error("Received non-JSON payload")
         return jsonify({"error": "Payload must be JSON"}), 400
@@ -401,13 +457,13 @@ def handle_webhook():
     event_id = data['event_id']
     event_type = data['event_type']
 
-    # 3. Idempotency Check
+    # 4. Idempotency Check (Replay Protection)
     existing_event = WebhookEvent.query.filter_by(event_id=event_id).first()
     if existing_event:
-        logger.warning(f"Duplicate event detected: {event_id}")
+        logger.warning(f"Replay attempt / Duplicate event detected: {event_id}")
         return jsonify({
             "status": "success",
-            "message": "Duplicate event ignored",
+            "message": "Duplicate event ignored (Replay Protection)",
             "event_id": event_id
         }), 200
 

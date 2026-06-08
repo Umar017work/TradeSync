@@ -44,8 +44,30 @@ Visit **`/docs`** on the running server for full interactive documentation.
 | `/` | `GET` | **Dashboard**: Live monitoring and demo control center. |
 | `/docs` | `GET` | **API Reference**: Detailed request/response examples. |
 | `/health` | `GET` | **Health Status**: System diagnostic check. |
-| `/webhook` | `POST` | **Webhook Receiver**: Idempotent event processing. |
+| `/webhook` | `POST` | **Webhook Receiver**: Secure, idempotent event processing. |
 | `/api/accounts`| `GET` | **Data Export**: JSON list of all registered accounts. |
+
+---
+
+## 🔒 Webhook Security
+
+In fintech environments, verifying the source and integrity of data is critical. TradeSync implements industry-standard security patterns:
+
+### 1. HMAC Signature Verification
+Every request to `/webhook` must include an `X-Signature` header. 
+- **Mechanism**: The payload is hashed using `HMAC-SHA256` with a shared `WEBHOOK_SECRET`.
+- **Integrity**: Ensures that the data has not been tampered with during transit.
+- **Authenticity**: Proves that the request originated from an authorized platform.
+
+### 2. Replay Protection
+To prevent attackers from capturing and re-sending valid requests:
+- **Idempotency**: The system uniquely identifies events by `event_id`.
+- **Rejection**: Subsequent requests with the same `event_id` are identified as replay attempts and ignored, preserving the database state.
+
+### 3. Audit Logging
+Every security event—successful verification, invalid signatures, and replay attempts—is logged with the request source IP for forensic auditing.
+
+---
 
 ## 🛠️ Skills Demonstrated
 

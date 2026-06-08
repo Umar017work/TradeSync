@@ -8,12 +8,14 @@ class Config:
     SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-secret-key')
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     
-    # Default to SQLite for easy local development, 
-    # but use PostgreSQL if DATABASE_URL is provided (e.g., in production)
+    # Default to SQLite for easy local development
     SQLALCHEMY_DATABASE_URI = os.environ.get(
         'DATABASE_URL', 
         'sqlite:///tradesync.db'
     )
+    
+    # Shared secret for HMAC Webhook Verification
+    WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', 'tradesync-dev-secret-key')
 
 class TestingConfig(Config):
     """Testing configuration."""

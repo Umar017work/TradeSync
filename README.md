@@ -72,7 +72,6 @@ Visit **`/docs`** on the running server for full interactive documentation.
    ```
 3. **Explore**: Open `http://localhost:5000` to see the dashboard.
 
-## 📝 Resume Summary
 
 **TradeSync | Backend Engineering Project**
 - Developed a fintech-ready webhook service using Flask and SQLAlchemy to handle high-frequency trading account events.
